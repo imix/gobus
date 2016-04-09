@@ -65,7 +65,7 @@ func TestHandlePut(t *testing.T) {
 	data = strings.NewReader("some data")
 	w, r = setupResponseRequest(t, "PUT", "http://localhost:8080/asdf/qwer/a/collection", data)
 	handlePut(db, w, r)
-	checkCode(t, w, http.StatusNotFound, "Put: 404 not working")
+	checkCode(t, w, http.StatusConflict, "Put: 409 not working")
 
 	// put to non-existens resource
 	data = strings.NewReader("some data")

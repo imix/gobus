@@ -36,7 +36,7 @@ func handlePut(db *Resource, w http.ResponseWriter, r *http.Request) {
 			respond(w, r, http.StatusOK, fmt.Sprintf("Put %s!", data))
 			callHooks(res, "PUT")
 		} else { //collection
-			respond(w, r, http.StatusNotFound, "Can not Put collection")
+			respond(w, r, http.StatusConflict, "Can not Put collection")
 		}
 	} else {
 		if containsCommand(remainder) {
