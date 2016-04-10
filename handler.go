@@ -81,6 +81,7 @@ func handlePut(hd *HandlerData) {
 			msg = fmt.Sprintf("Put %s!", data)
 		}
 		respond(w, r, http.StatusCreated, msg)
+		return
 	}
 	if cmds != nil {
 		respond(w, r, http.StatusNotFound, "Can not Put command")
