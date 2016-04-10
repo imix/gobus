@@ -6,7 +6,6 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 )
@@ -23,10 +22,11 @@ func TestParseHook(t *testing.T) {
 }
 
 func TestAddHook(t *testing.T) {
-	testURL, _ := url.Parse("http://localhost:8080/asdf/qwer")
-	root := newResource("root", false, testURL)
+	db := NewMemoryDB()
 	hookData := []byte(`{"name": "hook_name", "url": "http://www.test.ch/my/resource"}`)
-	name, err := addHook(root, hookData)
+	resPath := []string{"path"}
+	db.CreateResource(resPath, true)
+	name, err := db.AddHook(resPath, hookData)
 	if err != nil {
 		t.Error("Hook Add failed", err)
 	}
@@ -36,24 +36,27 @@ func TestAddHook(t *testing.T) {
 }
 
 func TestDeleteHook(t *testing.T) {
-	testURL, _ := url.Parse("http://localhost:8080/asdf/qwer")
-	root := newResource("root", false, testURL)
+	db := NewMemoryDB()
 	hookData := []byte(`{"name": "hook_name", "url": "http://www.test.ch/my/resource"}`)
-	name, _ := addHook(root, hookData)
-	err := deleteHook(root, name)
+	resPath := []string{"path"}
+	db.CreateResource(resPath, true)
+	name, _ := db.AddHook(resPath, hookData)
+	cmds := []string{"_hooks", name}
+	err := db.DeleteHook(resPath, cmds)
 	if err != nil {
 		t.Error("Hook Delete failed", err)
 	}
 
-	err = deleteHook(root, name)
+	err = db.DeleteHook(resPath, cmds)
 	if err == nil {
 		t.Error("Hook Delete Inexisting failed:", err)
 	}
 }
 
 func TestCallHook(t *testing.T) {
-	testURL, _ := url.Parse("http://localhost:8080/asdf/qwer")
-	root := newResource("root", false, testURL)
+	db := NewMemoryDB()
+	resPath := []string{"path"}
+	db.CreateResource(resPath, true)
 
 	c := make(chan []byte)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -63,11 +66,12 @@ func TestCallHook(t *testing.T) {
 	defer ts.Close()
 
 	hookData := []byte(fmt.Sprintf(`{"name": "hook_name", "url": "%s"}`, ts.URL))
-	_, err := addHook(root, hookData)
+	_, err := db.AddHook(resPath, hookData)
 	if err != nil {
 		t.Error(err)
 	}
-	callHooks(root, "POST")
+	hooks, _ := db.GetHooks(resPath)
+	callHooks(hooks, "POST", true, "http://a_resource.com/res")
 	var data []byte
 	data = <-c
 	var hookevent HookEvent

@@ -22,20 +22,27 @@ func splitPath(path string) []string {
 }
 
 // returns the realative path starting by removing basePath from newPath
-func getRelativePath(basePath string, newPath string) ([]string, error) {
+// and a trailing command if present
+func disectPath(basePath string, newPath string) ([]string, []string, error) {
 	baseComps := splitPath(basePath)
 	newComps := splitPath(newPath)
 	if len(baseComps) > len(newComps) {
 		err := errors.New("Base Path is longer than requested path!")
-		return nil, err
+		return nil, nil, err
 	}
 	for i, _ := range baseComps {
 		if strings.Compare(newComps[i], baseComps[i]) != 0 {
 			err := errors.New("Base Path is not a prefix of newPath")
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	return newComps[len(baseComps):], nil
+	relPath := newComps[len(baseComps):]
+	for i, e := range relPath {
+		if isCommand(e) {
+			return relPath[:i], relPath[i:], nil
+		}
+	}
+	return relPath, nil, nil
 }
 
 // checks if the given name is a command

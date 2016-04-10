@@ -14,28 +14,33 @@ func testSamePath(p1, p2 []string) bool {
 	return true
 }
 
-func TestGetRelativePath(t *testing.T) {
+func TestGetDisectPath(t *testing.T) {
 	var testdata = []struct {
 		Base     string
 		New      string
 		Outslice []string
+		Cmds     []string
 		ErrNil   bool
 	}{
-		{"", "path", []string{"path"}, true},
-		{"path/more", "path/more/not", []string{"not"}, true},
-		{"path/more", "path", []string{}, false},
-		{"/path/more", "more/path", []string{}, false},
+		{"", "path", []string{"path"}, []string{}, true},
+		{"path/more", "path/more/not", []string{"not"}, []string{}, true},
+		{"path/more", "path/more/not/_hooks/0", []string{"not"}, []string{"_hooks", "0"}, true},
+		{"path/more", "path", []string{}, []string{}, false},
+		{"/path/more", "more/path", []string{}, []string{}, false},
 	}
 	for i, td := range testdata {
-		rel, err := getRelativePath(td.Base, td.New)
+		comps, cmds, err := disectPath(td.Base, td.New)
 		if td.ErrNil != (err == nil) {
 			t.Error("Relative Test failed Error Nr:", i, err)
 		}
 		if !td.ErrNil {
 			continue
 		}
-		if !testSamePath(td.Outslice, rel) {
+		if !testSamePath(td.Outslice, comps) {
 			t.Error("Relative Test failed Compare Nr:", i)
+		}
+		if !testSamePath(td.Cmds, cmds) {
+			t.Error("Relative Test failed Cmds Nr:", i)
 		}
 	}
 }

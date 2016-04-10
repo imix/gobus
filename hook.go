@@ -1,12 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
-	"net/http"
 	"strconv"
 )
 
@@ -37,7 +34,11 @@ func parseHook(data []byte) (*Hook, error) {
 
 }
 
-func addHook(res *Resource, data []byte) (string, error) {
+func (db *MemoryDB) AddHook(comps []string, data []byte) (string, error) {
+	res, err := db.GetResource(comps)
+	if err != nil {
+		return "", err
+	}
 	hook, err := parseHook(data)
 	if err != nil {
 		return "", err
@@ -49,7 +50,15 @@ func addHook(res *Resource, data []byte) (string, error) {
 	return hook.Id, nil
 }
 
-func deleteHook(res *Resource, id string) error {
+func (db *MemoryDB) DeleteHook(comps []string, cmds []string) error {
+	res, err := db.GetResource(comps)
+	if err != nil {
+		return err
+	}
+	if len(cmds) != 2 {
+		return errors.New("Path not correct for delete")
+	}
+	id := cmds[1]
 	var idx int = -1
 	for i, h := range res.Hooks.Hooks {
 		if h.Id == id {
@@ -67,23 +76,10 @@ func deleteHook(res *Resource, id string) error {
 	return nil
 }
 
-func callHooks(res *Resource, method string) {
-	for _, h := range res.Hooks.Hooks {
-		var event = HookEvent{
-			Name:             h.Name,
-			Method:           method,
-			Item:             res.IsItem,
-			ModifiedResource: res.URL.String(),
-		}
-		data, err := json.Marshal(event)
-		if err != nil {
-			log.Printf("Failed to marshal hook %s", h.Name)
-			continue
-		}
-		go http.Post(h.URL, "application/json", bytes.NewReader(data))
+func (db *MemoryDB) GetHooks(comps []string) ([]*Hook, error) {
+	res, err := db.GetResource(comps)
+	if err != nil {
+		return nil, err
 	}
-}
-
-func getHooksJson(res *Resource) ([]byte, error) {
-	return json.Marshal(res.Hooks)
+	return res.Hooks.Hooks, nil
 }

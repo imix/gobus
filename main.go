@@ -7,7 +7,8 @@ import (
 
 func main() {
 	rootURL, _ := url.Parse("http://localhost:8080/")
-	db := newResource("root", false, rootURL)
-	http.HandleFunc("/", getHandler(db))
+	db := NewMemoryDB()
+
+	http.HandleFunc("/", getHandler(db, rootURL))
 	http.ListenAndServe(":8080", nil)
 }
