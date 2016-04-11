@@ -64,6 +64,7 @@ func handlePut(hd *HandlerData) {
 		return
 	}
 	data, err := ioutil.ReadAll(r.Body)
+	r.Body.Close()
 	if err != nil {
 		respond(w, r, http.StatusBadRequest, "Invalid Request")
 		return
@@ -96,7 +97,8 @@ func handlePut(hd *HandlerData) {
 			log.Printf("Internal error, could not get hooks: ", err.Error())
 			return
 		}
-		callHooks(hooks, "PUT", res.IsItem, buildResURL(hd.BaseURL, comps))
+		hookPath := path.Join(hd.BaseURL.Path, path.Join(comps...))
+		callHooks(hooks, "PUT", res.IsItem, hookPath)
 	} else { //collection
 		respond(w, r, http.StatusConflict, "Can not Put collection")
 	}
@@ -150,6 +152,7 @@ func handlePost(hd *HandlerData) {
 		return
 	}
 	data, err := ioutil.ReadAll(r.Body)
+	r.Body.Close()
 	if err != nil {
 		respond(w, r, http.StatusBadRequest, "Invalid Request")
 		return
@@ -169,7 +172,8 @@ func handlePost(hd *HandlerData) {
 				log.Printf("Internal error, could not get hooks: ", err.Error())
 				return
 			}
-			callHooks(hooks, "POST", res.IsItem, buildResURL(hd.BaseURL, comps))
+			hookPath := path.Join(hd.BaseURL.Path, path.Join(comps...))
+			callHooks(hooks, "POST", res.IsItem, hookPath)
 		}
 	} else {
 		handlePostCommand(hd, comps, cmds, data)
