@@ -158,7 +158,7 @@ func TestAddCollection(t *testing.T) {
 	elts := []string{"level0"}
 	db.CreateResource(elts, false)
 
-	name, err := db.AddToCollection(elts, []byte("bla"))
+	name, err := db.AddToCollection(elts, "text", []byte("bla"))
 	if err != nil {
 		t.Error("add to collection error")
 	}
@@ -170,7 +170,7 @@ func TestAddCollection(t *testing.T) {
 		t.Error("wrong data after add")
 	}
 
-	name, _ = db.AddToCollection(elts, []byte("1bla"))
+	name, _ = db.AddToCollection(elts, "text", []byte("1bla"))
 	if strings.Compare(name, "1") != 0 {
 		t.Error("add index 1 wrong")
 	}

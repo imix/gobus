@@ -69,6 +69,7 @@ func handlePut(hd *HandlerData) {
 		respond(w, r, http.StatusBadRequest, "Invalid Request")
 		return
 	}
+	contentType := r.Header.Get("Content-Type")
 	res, err := db.GetResource(comps)
 	if err != nil { // create resource if not existing
 		res := db.CreateResource(comps, len(data) > 0)
@@ -78,7 +79,7 @@ func handlePut(hd *HandlerData) {
 		}
 		msg := "Resource created"
 		if len(data) > 0 { // add value to item
-			db.ResourceSetValue(comps, data)
+			db.ResourceSetValue(comps, contentType, data)
 			msg = fmt.Sprintf("Put %s!", data)
 		}
 		respond(w, r, http.StatusCreated, msg)
@@ -90,7 +91,7 @@ func handlePut(hd *HandlerData) {
 	}
 	// resource exists
 	if res.IsItem { //update item
-		db.ResourceSetValue(comps, data)
+		db.ResourceSetValue(comps, contentType, data)
 		respond(w, r, http.StatusOK, fmt.Sprintf("Put %s!", data))
 		hooks, err := db.GetHooks(comps)
 		if err != nil {
@@ -157,11 +158,12 @@ func handlePost(hd *HandlerData) {
 		respond(w, r, http.StatusBadRequest, "Invalid Request")
 		return
 	}
+	contentType := r.Header.Get("Content-Type")
 	if cmds == nil { //found the resource no command
 		if res.IsItem {
 			respond(w, r, http.StatusConflict, "Item does not support Post")
 		} else {
-			name, err := db.AddToCollection(comps, data)
+			name, err := db.AddToCollection(comps, contentType, data)
 			if err != nil {
 				log.Printf("Internal error, could not get hooks: ", err.Error())
 				return
@@ -232,7 +234,9 @@ func handleGet(hd *HandlerData) {
 		return
 	}
 	if cmds == nil { //resource without commadn
-		respond(w, r, http.StatusOK, fmt.Sprintf("Get %s!", res.Value))
+		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", res.ContentType)
+		w.Write(res.Value)
 	} else { //resource exists with command
 		switch cmds[0] {
 		case "_hooks":

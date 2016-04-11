@@ -7,21 +7,22 @@ import (
 )
 
 type Resource struct {
-	IsItem     bool
-	Name       string
-	Value      []byte
-	Children   []*Resource
-	Hooks      *HookCollection
-	NextId     int
-	NextHookId int
+	IsItem      bool
+	Name        string
+	Value       []byte
+	ContentType string
+	Children    []*Resource
+	Hooks       *HookCollection
+	NextId      int
+	NextHookId  int
 }
 
 type GoBusDB interface {
 	CreateResource(elts []string, item bool) *Resource
 	GetResource(elts []string) (*Resource, error)
 	DeleteResource(elts []string) error
-	ResourceSetValue(elts []string, value []byte) error
-	AddToCollection(elts []string, data []byte) (string, error)
+	ResourceSetValue(elts []string, contentType string, value []byte) error
+	AddToCollection(elts []string, contentType string, data []byte) (string, error)
 	AddHook(comps []string, data []byte) (string, error)
 	DeleteHook(comps []string, cmds []string) error
 	GetHooks(comps []string) ([]*Hook, error)
@@ -38,11 +39,12 @@ func NewMemoryDB() GoBusDB {
 
 func newResource(name string, item bool) *Resource {
 	return &Resource{
-		IsItem:   item,
-		Name:     name,
-		Children: make([]*Resource, 0),
-		Hooks:    new(HookCollection),
-		NextId:   0,
+		IsItem:      item,
+		Name:        name,
+		ContentType: "",
+		Children:    make([]*Resource, 0),
+		Hooks:       new(HookCollection),
+		NextId:      0,
 	}
 }
 
@@ -136,16 +138,17 @@ func (db *MemoryDB) DeleteResource(elts []string) error {
 	return nil
 }
 
-func (db *MemoryDB) ResourceSetValue(elts []string, value []byte) error {
+func (db *MemoryDB) ResourceSetValue(elts []string, contentType string, value []byte) error {
 	res, err := db.GetResource(elts)
 	if err != nil {
 		return nil
 	}
 	res.Value = value
+	res.ContentType = contentType
 	return nil
 }
 
-func (db *MemoryDB) AddToCollection(elts []string, data []byte) (string, error) {
+func (db *MemoryDB) AddToCollection(elts []string, contentType string, data []byte) (string, error) {
 	res, err := db.GetResource(elts)
 	if err != nil {
 		return "", err
@@ -156,7 +159,7 @@ func (db *MemoryDB) AddToCollection(elts []string, data []byte) (string, error) 
 	name := strconv.Itoa(res.NextId)
 	resPath := append(elts, name)
 	newRes := db.CreateResource(resPath, true)
-	db.ResourceSetValue(resPath, data)
+	db.ResourceSetValue(resPath, contentType, data)
 	res.Children = append(res.Children, newRes)
 	res.NextId += 1
 	return name, nil

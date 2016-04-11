@@ -203,11 +203,14 @@ func TestHandleGet(t *testing.T) {
 
 	// request an existing resource
 	hd := createHandlerData(t, db, "GET", "http://localhost:8080/asdf/qwer/path/res", nil)
-	db.ResourceSetValue(resPath, []byte("blup"))
+	db.ResourceSetValue(resPath, "text", []byte("blup"))
 	handleGet(hd)
 	checkCode(t, hd, http.StatusOK, "Get: 200 not working")
 	if !strings.Contains(hd.W.(*httptest.ResponseRecorder).Body.String(), "blup") {
 		t.Error("Get: content not set")
+	}
+	if hd.W.Header().Get("Content-Type") != "text" {
+		t.Error("Get: contentType not set")
 	}
 
 	// request a not-existing resource
