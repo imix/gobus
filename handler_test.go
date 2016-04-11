@@ -56,11 +56,12 @@ func TestHandlePut(t *testing.T) {
 	res := db.CreateResource(resPath, true)
 
 	// put to item
-	data := strings.NewReader("some data")
+	data := strings.NewReader("some data àL")
 	hd := createHandlerData(t, db, "PUT", "http://localhost:8080/asdf/qwer/path/res", data)
 	handlePut(hd)
 	checkCode(t, hd, http.StatusOK, "Put: 200 not working")
-	if strings.Compare(string(res.Value), "some data") != 0 {
+	res, _ = db.GetResource(resPath)
+	if strings.Compare(string(res.Value), "some data àL") != 0 {
 		t.Error("Put: Value not working")
 	}
 	// put to collection
@@ -82,7 +83,7 @@ func TestHandlePut(t *testing.T) {
 func TestHandlePost(t *testing.T) {
 	db := NewMemoryDB()
 	resPath := []string{"path", "res"}
-	res := db.CreateResource(resPath, false)
+	db.CreateResource(resPath, false)
 
 	// post to existing collection
 	data := strings.NewReader("some data")
@@ -93,7 +94,11 @@ func TestHandlePost(t *testing.T) {
 	if strings.Compare("http://localhost:8080/asdf/qwer/path/res/0", location) != 0 {
 		t.Error("Post: Location wrong")
 	}
-	if strings.Compare(string(res.Children[0].Value), "some data") != 0 {
+	child, err := db.GetResource(append(resPath, "0"))
+	if err != nil {
+		t.Error("Post: Could not get Resource")
+	}
+	if strings.Compare(string(child.Value), "some data") != 0 {
 		t.Error("Post: Value wrong")
 	}
 	// post to inexisting resource
@@ -103,7 +108,7 @@ func TestHandlePost(t *testing.T) {
 
 	// post to item
 	resPath = []string{"an", "item"}
-	res = db.CreateResource(resPath, true)
+	db.CreateResource(resPath, true)
 
 	hd = createHandlerData(t, db, "POST", "http://localhost:8080/asdf/qwer/an/item", data)
 	handlePost(hd)

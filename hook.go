@@ -1,11 +1,6 @@
 package main
 
-import (
-	"encoding/json"
-	"errors"
-	"fmt"
-	"strconv"
-)
+import "encoding/json"
 
 type HookCollection struct {
 	Hooks      []*Hook `json:"hooks"`
@@ -32,54 +27,4 @@ func parseHook(data []byte) (*Hook, error) {
 	err := json.Unmarshal(data, &hook)
 	return &hook, err
 
-}
-
-func (db *MemoryDB) AddHook(comps []string, data []byte) (string, error) {
-	res, err := db.GetResource(comps)
-	if err != nil {
-		return "", err
-	}
-	hook, err := parseHook(data)
-	if err != nil {
-		return "", err
-	}
-	id := strconv.Itoa(res.Hooks.NextHookId)
-	hook.Id = id
-	res.Hooks.Hooks = append(res.Hooks.Hooks, hook)
-	res.Hooks.NextHookId += 1
-	return hook.Id, nil
-}
-
-func (db *MemoryDB) DeleteHook(comps []string, cmds []string) error {
-	res, err := db.GetResource(comps)
-	if err != nil {
-		return err
-	}
-	if len(cmds) != 2 {
-		return errors.New("Path not correct for delete")
-	}
-	id := cmds[1]
-	var idx int = -1
-	for i, h := range res.Hooks.Hooks {
-		if h.Id == id {
-			idx = i
-			break
-		}
-	}
-	if idx == -1 {
-		return errors.New(fmt.Sprintf("Hook does not exist: %s", id))
-	}
-	a := res.Hooks.Hooks
-	a[idx] = a[len(a)-1]
-	a[len(a)-1] = nil
-	res.Hooks.Hooks = a[:len(a)-1]
-	return nil
-}
-
-func (db *MemoryDB) GetHooks(comps []string) ([]*Hook, error) {
-	res, err := db.GetResource(comps)
-	if err != nil {
-		return nil, err
-	}
-	return res.Hooks.Hooks, nil
 }
