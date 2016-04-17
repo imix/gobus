@@ -12,6 +12,10 @@ import (
 	"testing"
 )
 
+func teardownRedis(db GoBusDB) {
+	db.(*RedisDB).Client.FlushDb()
+}
+
 // create HandlerDate for the Tests
 func createHandlerData(t *testing.T, db GoBusDB, method, callUrl string, data io.Reader) *HandlerData {
 	testURL, _ := url.Parse("http://localhost:8080/asdf/qwer")
@@ -37,7 +41,7 @@ func checkCode(t *testing.T, hd *HandlerData, code int, msg string) {
 }
 
 func TestRespond(t *testing.T) {
-	db := NewMemoryDB()
+	db := NewRedisDB()
 	hd := createHandlerData(t, db, "GET", "http://example.com/foo", nil)
 	w := hd.W.(*httptest.ResponseRecorder)
 	respond(w, hd.R, http.StatusNotFound, "a message")
@@ -48,12 +52,13 @@ func TestRespond(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "a message") {
 		t.Error("Body not set msg")
 	}
+	teardownRedis(db)
 }
 
 func TestHandlePut(t *testing.T) {
-	db := NewMemoryDB()
+	db := NewRedisDB()
 	resPath := []string{"path", "res"}
-	res := db.CreateResource(resPath, true)
+	res, _ := db.CreateResource(resPath, true)
 
 	// put to item
 	data := strings.NewReader("some data àL")
@@ -61,12 +66,13 @@ func TestHandlePut(t *testing.T) {
 	handlePut(hd)
 	checkCode(t, hd, http.StatusOK, "Put: 200 not working")
 	res, _ = db.GetResource(resPath)
-	if strings.Compare(string(res.Value), "some data àL") != 0 {
+	_, value, _ := res.GetValue()
+	if strings.Compare(string(value), "some data àL") != 0 {
 		t.Error("Put: Value not working")
 	}
 	// put to collection
 	resPath = []string{"a", "collection"}
-	res = db.CreateResource(resPath, false)
+	res, _ = db.CreateResource(resPath, false)
 
 	data = strings.NewReader("some data")
 	hd = createHandlerData(t, db, "PUT", "http://localhost:8080/asdf/qwer/a/collection", data)
@@ -74,14 +80,14 @@ func TestHandlePut(t *testing.T) {
 	checkCode(t, hd, http.StatusConflict, "Put: 409 not working")
 
 	// put to non-existens resource
-	data = strings.NewReader("some data")
 	hd = createHandlerData(t, db, "PUT", "http://localhost:8080/asdf/qwer/new/item", data)
 	handlePut(hd)
 	checkCode(t, hd, http.StatusCreated, "Put: 201 not working")
+	teardownRedis(db)
 }
 
 func TestHandlePost(t *testing.T) {
-	db := NewMemoryDB()
+	db := NewRedisDB()
 	resPath := []string{"path", "res"}
 	db.CreateResource(resPath, false)
 
@@ -96,9 +102,10 @@ func TestHandlePost(t *testing.T) {
 	}
 	child, err := db.GetResource(append(resPath, "0"))
 	if err != nil {
-		t.Error("Post: Could not get Resource")
+		t.Fatal("Post: Could not get Resource")
 	}
-	if strings.Compare(string(child.Value), "some data") != 0 {
+	_, value, _ := child.GetValue()
+	if strings.Compare(string(value), "some data") != 0 {
 		t.Error("Post: Value wrong")
 	}
 	// post to inexisting resource
@@ -113,12 +120,16 @@ func TestHandlePost(t *testing.T) {
 	hd = createHandlerData(t, db, "POST", "http://localhost:8080/asdf/qwer/an/item", data)
 	handlePost(hd)
 	checkCode(t, hd, http.StatusConflict, "Post: 409 not working")
+	teardownRedis(db)
 }
 
 func TestHandlePostCommands(t *testing.T) {
-	db := NewMemoryDB()
+	db := NewRedisDB()
 	resPath := []string{"an_item"}
-	res := db.CreateResource(resPath, false)
+	res, err := db.CreateResource(resPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// start server for hook test
 	c := make(chan []byte)
@@ -133,7 +144,11 @@ func TestHandlePostCommands(t *testing.T) {
 	hd := createHandlerData(t, db, "POST", "http://localhost:8080/asdf/qwer/an_item/_hooks", hookData)
 	handlePost(hd)
 	checkCode(t, hd, http.StatusCreated, "Post Hook: 201 not working")
-	if !strings.Contains(res.Hooks.Hooks[0].Name, "hook_name") {
+	hooks, err := res.GetHooks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(hooks[0].Name, "hook_name") {
 		t.Error("Post Hook: Content not working")
 	}
 
@@ -144,43 +159,45 @@ func TestHandlePostCommands(t *testing.T) {
 	var data []byte
 	data = <-c
 	var hookevent HookEvent
-	err := json.Unmarshal(data, &hookevent)
+	err = json.Unmarshal(data, &hookevent)
 	if err != nil {
 		t.Error(err)
 	}
+	teardownRedis(db)
 }
 
 func TestHandleDelete(t *testing.T) {
-	db := NewMemoryDB()
+	db := NewRedisDB()
 	resPath := []string{"path", "res"}
 	db.CreateResource(resPath, true)
 
 	// delete intermediate resource
 	hd := createHandlerData(t, db, "DELETE", "http://localhost:8080/asdf/qwer/path", nil)
 	handleDelete(hd)
-	checkCode(t, hd, http.StatusNotFound, "Get: 404 not working")
+	checkCode(t, hd, http.StatusNotFound, "Delete intermdiate: 404 not working")
 
 	// delete existing resource
 	hd = createHandlerData(t, db, "DELETE", "http://localhost:8080/asdf/qwer/path/res", nil)
 	handleDelete(hd)
 	checkCode(t, hd, http.StatusOK, "Delete: 200 not working")
-	deletedRes, _ := db.GetResource(resPath)
-	if strings.Compare(deletedRes.Name, "path") != 0 {
-		t.Error("Delete not working")
+	_, err := db.GetResource(resPath)
+	if err == nil {
+		t.Error("Could not delete resource")
 	}
 
 	// delete a not-existing resource
 	hd = createHandlerData(t, db, "DELETE", "http://localhost:8080/asdf/qwer/asdfas/res", nil)
 	handleDelete(hd)
-	checkCode(t, hd, http.StatusNotFound, "Get: 404 not working")
+	checkCode(t, hd, http.StatusNotFound, "Delete inexisting: 404 not working")
+	teardownRedis(db)
 }
 
 func TestHandleDeleteCommands(t *testing.T) {
-	db := NewMemoryDB()
+	db := NewRedisDB()
 	resPath := []string{"path", "res"}
-	res := db.CreateResource(resPath, true)
+	res, _ := db.CreateResource(resPath, true)
 	hookData := []byte(fmt.Sprintf(`{"name": "a_hook", "url": "http://test.com/a/hook"}`))
-	db.AddHook(resPath, hookData)
+	res.AddHook(hookData)
 
 	// delete unknown hook
 	hd := createHandlerData(t, db, "DELETE", "http://localhost:8080/asdf/qwer/path/res/_hooks/1", nil)
@@ -196,19 +213,21 @@ func TestHandleDeleteCommands(t *testing.T) {
 	hd = createHandlerData(t, db, "DELETE", "http://localhost:8080/asdf/qwer/path/res/_hooks/0", nil)
 	handleDelete(hd)
 	checkCode(t, hd, http.StatusOK, "Delete Hook: 200 not working")
-	if len(res.Hooks.Hooks) > 0 {
+	hooks, _ := res.GetHooks()
+	if len(hooks) > 0 {
 		t.Error("Delete Hook not working")
 	}
+	teardownRedis(db)
 }
 
 func TestHandleGet(t *testing.T) {
-	db := NewMemoryDB()
+	db := NewRedisDB()
 	resPath := []string{"path", "res"}
-	db.CreateResource(resPath, true)
+	res, _ := db.CreateResource(resPath, true)
 
 	// request an existing resource
 	hd := createHandlerData(t, db, "GET", "http://localhost:8080/asdf/qwer/path/res", nil)
-	db.ResourceSetValue(resPath, "text", []byte("blup"))
+	res.SetValue("text", []byte("blup"))
 	handleGet(hd)
 	checkCode(t, hd, http.StatusOK, "Get: 200 not working")
 	if !strings.Contains(hd.W.(*httptest.ResponseRecorder).Body.String(), "blup") {
@@ -222,14 +241,15 @@ func TestHandleGet(t *testing.T) {
 	hd = createHandlerData(t, db, "GET", "http://localhost:8080/asdf/qwer/asdfas/res", nil)
 	handleGet(hd)
 	checkCode(t, hd, http.StatusNotFound, "Get: 404 not working")
+	teardownRedis(db)
 }
 
 func TestHandleGetHooks(t *testing.T) {
-	db := NewMemoryDB()
+	db := NewRedisDB()
 	resPath := []string{"path", "res"}
-	db.CreateResource(resPath, false)
+	res, _ := db.CreateResource(resPath, false)
 	hookData := []byte(fmt.Sprintf(`{"name": "a_hook", "url": "http://test.com/a/hook"}`))
-	db.AddHook(resPath, hookData)
+	res.AddHook(hookData)
 
 	hd := createHandlerData(t, db, "GET", "http://localhost:8080/asdf/qwer/path/res/_hooks", nil)
 	handleGet(hd)
@@ -237,4 +257,5 @@ func TestHandleGetHooks(t *testing.T) {
 	if !strings.Contains(hd.W.(*httptest.ResponseRecorder).Body.String(), "test.com") {
 		t.Error("Get: content not set")
 	}
+	teardownRedis(db)
 }

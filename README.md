@@ -2,7 +2,7 @@
 ## Introduction
 gobus is a rest communication platform. It permits the communication between processes through rest calls. There is no need for configuration before running gobus, all configuration (e.g. creation of resources) is done through rest calls. Gobus supports [resthooks](http://resthooks.org/) for "real-time" communication.
 
-It currently uses an in-memory datastore which is never saved to disk. This means your data is lost once you stop gobus.
+Gobus can handle any type of content, be it text or binary. Content related to the use of gobus (e.g. hooks) use json. It uses http://redis.io/ as datastore.
 
 ## Install
 To build gobus you need to have [golang](https://golang.org/) installed. In the src directory in your GOPATH do the following.
@@ -11,6 +11,7 @@ git clone https://github.com/imix/gobus.git
 cd gobus
 go build
 ```
+Additionally you need to install redis. You can install it via your operating system (e.g. dnf, apt-get) or from http://redis.io/topics/quickstart.
 
 ## Usage
 You can start gobus by calling the executable:
