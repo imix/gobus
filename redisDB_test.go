@@ -3,10 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
-	"io/ioutil"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -149,18 +145,20 @@ func TestGetInexistingResource(t *testing.T) {
 func TestDeleteResource(t *testing.T) {
 	db := NewRedisDB()
 	elts := []string{"level0", "level1", "level2"}
-	db.CreateResource(elts, false)
+	res, _ := db.CreateResource(elts, false)
 
-	err := db.DeleteResource(elts)
+	err := res.Delete()
 	if err != nil {
 		t.Error("delete error")
 	}
 	elts = []string{"level0", "level1"}
-	res, _ := db.GetResource(elts)
+	res, _ = db.GetResource(elts)
 	if children, _ := res.GetChildren(); len(children) > 0 {
 		t.Error("delete failed")
 	}
-	err = db.DeleteResource([]string{"level0"})
+	elts = []string{"level0"}
+	res, _ = db.GetResource(elts)
+	err = res.Delete()
 	if err == nil {
 		t.Error("delete should not be possible on non-leave resources")
 	}
@@ -211,6 +209,23 @@ func TestAddHook(t *testing.T) {
 	}
 }
 
+func TestGetHook(t *testing.T) {
+	db := NewRedisDB()
+	hookData := []byte(`{"name": "hook_name", "url": "http://www.test.ch/my/resource"}`)
+	resPath := []string{"path"}
+	res, _ := db.CreateResource(resPath, true)
+	name, _ := res.AddHook(hookData)
+	newHook, err := res.GetHook(name)
+	newHookData, err := json.Marshal(newHook)
+	if err != nil {
+		t.Error("Hook could not be marshalled")
+	}
+	if bytes.Contains([]byte(`"name": "hook_name", "url": "http://www.test.ch/my/resource"`), newHookData) {
+		t.Error("Get returned wrong hook")
+	}
+	teardownRedis(db)
+}
+
 func TestDeleteHook(t *testing.T) {
 	db := NewRedisDB()
 	hookData := []byte(`{"name": "hook_name", "url": "http://www.test.ch/my/resource"}`)
@@ -225,35 +240,6 @@ func TestDeleteHook(t *testing.T) {
 	err = res.DeleteHook(name)
 	if err == nil {
 		t.Error("Hook Delete Inexisting failed:", err)
-	}
-	teardownRedis(db)
-}
-
-func TestCallHook(t *testing.T) {
-	db := NewRedisDB()
-	resPath := []string{"path"}
-	res, _ := db.CreateResource(resPath, true)
-
-	c := make(chan []byte)
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := ioutil.ReadAll(r.Body)
-		c <- b
-	}))
-	defer ts.Close()
-
-	hookData := []byte(fmt.Sprintf(`{"name": "hook_name", "url": "%s"}`, ts.URL))
-	_, err := res.AddHook(hookData)
-	if err != nil {
-		t.Error(err)
-	}
-	hooks, _ := res.GetHooks()
-	callHooks(hooks, "POST", true, "http://a_resource.com/res")
-	var data []byte
-	data = <-c
-	var hookevent HookEvent
-	err = json.Unmarshal(data, &hookevent)
-	if err != nil {
-		t.Error(err)
 	}
 	teardownRedis(db)
 }

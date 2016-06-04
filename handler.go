@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -21,25 +22,33 @@ type HandlerData struct {
 }
 
 // creates a standard response
-func respond(w http.ResponseWriter, r *http.Request, status int, msg string) {
+func respond(hd *HandlerData, status int, msg string) {
+	w, r := hd.W, hd.R
 	w.WriteHeader(status)
 	fmt.Fprintf(w, "%s: ", strconv.Itoa(status))
 	fmt.Fprintf(w, "%s\n", msg)
 	fmt.Fprintf(w, "Request URL: %s\n", r.URL.String())
 }
 
-func buildResURL(baseURL *url.URL, relPath []string) string {
-	resURL := *baseURL
-	resURL.Path = path.Join(resURL.Path, path.Join(relPath...))
-	return resURL.String()
-}
-
-func callHooks(hooks []*Hook, method string, isItem bool, resURL string) {
+func callHooks(res Resource, method, basePath string) {
+	comps := res.GetElts()
+	resURL := path.Join(basePath, path.Join(comps...))
+	hooks, err := res.GetHooks()
+	if err != nil {
+		log.Printf("Internal error, could not get hooks: %v", err.Error())
+		return
+	}
+	isitem, err := res.IsItem()
+	if err != nil {
+		panic(err)
+		log.Printf("Internal error, could not get isitem: %v", err.Error())
+		return
+	}
 	for _, h := range hooks {
 		var event = HookEvent{
 			Name:             h.Name,
 			Method:           method,
-			Item:             isItem,
+			Item:             isitem,
 			ModifiedResource: resURL,
 		}
 		data, err := json.Marshal(event)
@@ -49,81 +58,6 @@ func callHooks(hooks []*Hook, method string, isItem bool, resURL string) {
 		}
 		go http.Post(h.URL, "application/json", bytes.NewReader(data))
 	}
-}
-
-func getHooksJson(res Resource) ([]byte, error) {
-	hooks, err := res.GetHooks()
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(hooks)
-}
-
-// handle Put requests
-func handlePut(hd *HandlerData) {
-	db, w, r := hd.DB, hd.W, hd.R
-	comps, cmds, err := disectPath(hd.BaseURL.Path, r.URL.Path)
-	if err != nil {
-		respond(w, r, http.StatusNotFound, "Not Found")
-		return
-	}
-	data, err := ioutil.ReadAll(r.Body)
-	r.Body.Close()
-	if err != nil {
-		respond(w, r, http.StatusBadRequest, "Invalid Request")
-		return
-	}
-	contentType := r.Header.Get("Content-Type")
-	exists, err := db.ResourceExists(comps)
-	if err != nil {
-		log.Printf("Internal error, could not get item: ", err.Error())
-		return
-	}
-	var res Resource
-	if !exists { // create resource if not existing
-		res, err = db.CreateResource(comps, len(data) > 0)
-		if err != nil {
-			respond(w, r, http.StatusInternalServerError, "Could not create Resource")
-			return
-		}
-		msg := "Resource created"
-		if len(data) > 0 { // add value to item
-			res.SetValue(contentType, data)
-			msg = fmt.Sprintf("Put %s!", data)
-		}
-		respond(w, r, http.StatusCreated, msg)
-		return
-	} else {
-		res, err = db.GetResource(comps)
-		if err != nil {
-			log.Printf("Internal error, could not get item: ", err.Error())
-			return
-		}
-	}
-	if cmds != nil {
-		respond(w, r, http.StatusNotFound, "Can not Put command")
-		return
-	}
-	// resource exists
-	isItem, err := res.IsItem()
-	if err != nil {
-		log.Printf("Internal error, could not get item: ", err.Error())
-		return
-	}
-	if !isItem {
-		respond(w, r, http.StatusConflict, "Can not Put collection")
-		return
-	}
-	res.SetValue(contentType, data)
-	respond(w, r, http.StatusOK, fmt.Sprintf("Put %s!", data))
-	hooks, err := res.GetHooks()
-	if err != nil {
-		log.Printf("Internal error, could not get hooks: ", err.Error())
-		return
-	}
-	hookPath := path.Join(hd.BaseURL.Path, path.Join(comps...))
-	callHooks(hooks, "PUT", isItem, hookPath)
-
 }
 
 // respond with a "Created" (201) and set location to the new url
@@ -139,160 +73,317 @@ func respondCreatedNewURL(w http.ResponseWriter, baseUrl *url.URL, id string) {
 	fmt.Fprintf(w, "201 Resource Created %s!", newURL.String())
 }
 
-// handle Post requests that consider commands
-// currently only _hooks is supported
-func handlePostCommand(hd *HandlerData, comps, cmds []string, data []byte) {
-	db, w, r := hd.DB, hd.W, hd.R
-	if len(cmds) > 1 {
-		respond(w, r, http.StatusBadRequest, "Invalid Request")
+// posts an item into a collection, returns the name of the item (which is generated)
+func postCollection(hd *HandlerData, res Resource) {
+	body := hd.R.Body
+	data, err := ioutil.ReadAll(body)
+	body.Close()
+	if err != nil {
+		respond(hd, http.StatusBadRequest, "Invalid Request")
 		return
 	}
-	switch cmds[0] {
-	case "_hooks":
-		res, err := db.GetResource(comps)
+	contentType := hd.R.Header.Get("Content-Type")
+	name, err := res.AddToCollection(contentType, data)
+	if err != nil {
+		log.Printf("Internal error, could not get hooks: ", err.Error())
+		return
+	}
+	respondCreatedNewURL(hd.W, hd.R.URL, name)
+
+	callHooks(res, "POST", hd.BaseURL.Path)
+}
+
+// gets a collection, returns a list of children in the collection
+func getCollection(hd *HandlerData, res Resource) {
+	abs_ids, err := res.GetChildren()
+	if err != nil {
+		respond(hd, http.StatusInternalServerError, "Could not get children")
+		return
+	}
+	// child keys are absolute, have to convert them to relative
+	var ids = []string{}
+	for _, c := range abs_ids {
+		elts := strings.Split(c, ":")
+		ids = append(ids, elts[len(elts)-1])
+	}
+	json, err := json.Marshal(ids)
+	if err != nil {
+		respond(hd, http.StatusInternalServerError, "Could not get Collection Json")
+		return
+	}
+	hd.W.Write(json)
+}
+
+// handles methods on collections
+func handleCollection(hd *HandlerData, res Resource) {
+	switch hd.R.Method {
+	case "DELETE":
+		deleteResource(hd, res)
+	case "GET":
+		getCollection(hd, res)
+	case "POST":
+		postCollection(hd, res)
+	default:
+		respond(hd, http.StatusMethodNotAllowed, "Method not allowed for collection.")
+	}
+}
+
+// puts an item
+func putItem(hd *HandlerData, res Resource) {
+	body := hd.R.Body
+	data, err := ioutil.ReadAll(body)
+	body.Close()
+	if err != nil {
+		respond(hd, http.StatusBadRequest, "Invalid Request")
+		return
+	}
+	contentType := hd.R.Header.Get("Content-Type")
+	err = res.SetValue(contentType, data)
+	if err != nil {
+		respond(hd, http.StatusInternalServerError, "Could not set item value.")
+		return
+	}
+	respond(hd, http.StatusOK, fmt.Sprintf("Put %s!", data))
+
+	callHooks(res, "PUT", hd.BaseURL.Path)
+}
+
+func getItem(hd *HandlerData, res Resource) {
+	ct, value, err := res.GetValue()
+	if err != nil {
+		respond(hd, http.StatusInternalServerError, "Could not get item value.")
+		return
+	}
+	w := hd.W
+	w.WriteHeader(http.StatusOK)
+	w.Header().Set("Content-Type", ct)
+	w.Write(value)
+}
+
+// deletes an resource (item or collection)
+func deleteResource(hd *HandlerData, res Resource) {
+	// call Hooks before executing delete
+	callHooks(res, "DELETE", hd.BaseURL.Path)
+
+	err := res.Delete()
+	if err != nil {
+		respond(hd, http.StatusNotFound, "Could not delete Item")
+		return
+	}
+	respond(hd, http.StatusOK, fmt.Sprintf("Item deleted!"))
+}
+
+// handles methods on items
+func handleItem(hd *HandlerData, res Resource) {
+	switch hd.R.Method {
+	case "DELETE":
+		deleteResource(hd, res)
+	case "GET":
+		getItem(hd, res)
+	case "PUT":
+		putItem(hd, res)
+	default:
+		respond(hd, http.StatusMethodNotAllowed, "Method not allowed for items.")
+	}
+}
+
+func handleExistingResource(hd *HandlerData, res Resource) {
+	isitem, err := res.IsItem()
+	if err != nil {
+		respond(hd, http.StatusInternalServerError, "Could not get Resource type.")
+		return
+	}
+	if isitem {
+		handleItem(hd, res)
+	} else {
+		handleCollection(hd, res)
+	}
+}
+
+// creates an inexisting resource
+// only put is permitted
+// if a body is present, an item is created
+// if no body is present, a collection is created
+func handleInexistingResource(hd *HandlerData, comps []string) {
+	if hd.R.Method != "PUT" {
+		respond(hd, http.StatusNotFound, "Resource not found.")
+		return
+	}
+	body := hd.R.Body
+	data, err := ioutil.ReadAll(body)
+	body.Close()
+	if err != nil {
+		respond(hd, http.StatusBadRequest, "Invalid Request")
+		return
+	}
+	res, err := hd.DB.CreateResource(comps, len(data) > 0)
+	if err != nil {
+		respond(hd, http.StatusInternalServerError, "Could not create Resource")
+		return
+	}
+	msg := "Resource created"
+	if len(data) > 0 { // add value to item
+		contentType := hd.R.Header.Get("Content-Type")
+		res.SetValue(contentType, data)
+		msg = fmt.Sprintf("Put %s!", data)
+	}
+	respond(hd, http.StatusCreated, msg)
+}
+
+// hook handlers
+// deletes an existing hook
+func deleteHook(hd *HandlerData, res Resource, cmds []string) {
+	if len(cmds) != 2 {
+		respond(hd, http.StatusNotFound, "Not Found")
+		return
+	}
+	err := res.DeleteHook(cmds[1])
+	if err != nil {
+		respond(hd, http.StatusNotFound, "Not Found")
+		return
+	}
+	respond(hd, http.StatusOK, "Deleted")
+}
+
+// returns either a single hook specified by the ID or a list of all hooks
+func getHook(hd *HandlerData, res Resource, cmds []string) {
+	w := hd.W
+	switch len(cmds) {
+	case 1: // get on the _hooks collection
+		ids, err := res.GetHooksIDs()
 		if err != nil {
-			respond(w, r, http.StatusInternalServerError, "Could not create Hook")
-			return
+			respond(hd, http.StatusInternalServerError, "Could not get Hooks")
+			break
 		}
+		data, err := json.Marshal(ids)
+		if err != nil {
+			respond(hd, http.StatusInternalServerError, "Could not get Hooks Json")
+			break
+		}
+		w.Write(data)
+	case 2: // get a specific hook
+		hook, err := res.GetHook(cmds[1])
+		if err != nil {
+			respond(hd, http.StatusInternalServerError, "Could not get Hook")
+			break
+		}
+		data, err := json.Marshal(hook)
+		if err != nil {
+			respond(hd, http.StatusInternalServerError, "Could not get Hook Json")
+			break
+		}
+		w.Write(data)
+	default:
+		respond(hd, http.StatusNotFound, "Hooks do not have sub-elements.")
+	}
+}
+
+// create a new hook, returns the ID of the hook
+func postHook(hd *HandlerData, res Resource, cmds []string) {
+	if len(cmds) == 1 {
+		body := hd.R.Body
+		data, err := ioutil.ReadAll(body)
+		body.Close()
 		name, err := res.AddHook(data)
 		if err != nil {
-			respond(w, r, http.StatusInternalServerError, "Could not create Hook")
+			respond(hd, http.StatusInternalServerError, "Could not create Hook")
 			return
 		}
-		respondCreatedNewURL(w, r.URL, name)
-	}
-}
-
-// handle Post requests
-// post is permitted on collections and for commands
-// post on items is not allowed
-func handlePost(hd *HandlerData) {
-	db, w, r := hd.DB, hd.W, hd.R
-	comps, cmds, err := disectPath(hd.BaseURL.Path, r.URL.Path)
-	if err != nil {
-		respond(w, r, http.StatusNotFound, "Not Found")
-		return
-	}
-	res, err := db.GetResource(comps)
-	if err != nil {
-		respond(w, r, http.StatusNotFound, "Not Found")
-		return
-	}
-	data, err := ioutil.ReadAll(r.Body)
-	r.Body.Close()
-	if err != nil {
-		respond(w, r, http.StatusBadRequest, "Invalid Request")
-		return
-	}
-	contentType := r.Header.Get("Content-Type")
-	if cmds == nil { //found the resource no command
-		isItem, err := res.IsItem()
-		if err != nil {
-			log.Printf("Internal error, could not get hooks: ", err.Error())
-			return
-		}
-		if isItem {
-			respond(w, r, http.StatusConflict, "Item does not support Post")
-		} else {
-			name, err := res.AddToCollection(contentType, data)
-			if err != nil {
-				log.Printf("Internal error, could not get hooks: ", err.Error())
-				return
-			}
-			respondCreatedNewURL(w, r.URL, name)
-			hooks, err := res.GetHooks()
-			if err != nil {
-				log.Printf("Internal error, could not get hooks: ", err.Error())
-				return
-			}
-			hookPath := path.Join(hd.BaseURL.Path, path.Join(comps...))
-			callHooks(hooks, "POST", isItem, hookPath)
-		}
+		respondCreatedNewURL(hd.W, hd.R.URL, name)
 	} else {
-		handlePostCommand(hd, comps, cmds, data)
+		respond(hd, http.StatusMethodNotAllowed, "Method not allowed for hooks.")
 	}
 }
 
-// handles delete of a resource
-// can delete resources, hooks
-func handleDelete(hd *HandlerData) {
-	db, w, r := hd.DB, hd.W, hd.R
-	comps, cmds, err := disectPath(hd.BaseURL.Path, r.URL.Path)
-	if err != nil {
-		respond(w, r, http.StatusNotFound, "Not Found")
-		return
-	}
-	res, err := db.GetResource(comps)
-	if err != nil {
-		respond(w, r, http.StatusNotFound, "Not Found")
-		return
-	}
-	if cmds == nil { //no command
-		err := db.DeleteResource(comps)
+// puts a hook, only permitted for existing hooks
+// new hooks have to be created with post
+func putHook(hd *HandlerData, res Resource, cmds []string) {
+	if len(cmds) == 2 {
+		_, err := res.GetHook(cmds[1])
 		if err != nil {
-			respond(w, r, http.StatusNotFound, err.Error())
+			respond(hd, http.StatusInternalServerError, "Could not get Hook")
 			return
 		}
-		respond(w, r, http.StatusOK, fmt.Sprintf("Resource Deleted!"))
+		body := hd.R.Body
+		data, err := ioutil.ReadAll(body)
+		body.Close()
+		if err != nil {
+			respond(hd, http.StatusBadRequest, "Invalid Request")
+			return
+		}
+		err = res.SetHook(cmds[1], data)
+		if err != nil {
+			respond(hd, http.StatusInternalServerError, "Could not set Hook")
+			return
+		}
+		respond(hd, http.StatusOK, "Hook updated.")
 	} else {
-		switch cmds[0] {
-		case "_hooks":
-			if len(cmds) != 2 {
-				respond(w, r, http.StatusNotFound, "Not Found")
-				return
-			}
-			err := res.DeleteHook(cmds[1])
-			if err != nil {
-				respond(w, r, http.StatusNotFound, "Not Found")
-				return
-			}
-			respond(w, r, http.StatusOK, "Deleted")
-		default:
-			respond(w, r, http.StatusNotFound, "Not Found")
-		}
+		respond(hd, http.StatusMethodNotAllowed, "Put only allowed on existing hooks.")
 	}
 }
 
-// handles Get request
-// returns the value of the resource
-// BUG(saes): get on collections returns empty and not the items
-func handleGet(hd *HandlerData) {
-	db, w, r := hd.DB, hd.W, hd.R
-	comps, cmds, err := disectPath(hd.BaseURL.Path, r.URL.Path)
-	if err != nil {
-		respond(w, r, http.StatusNotFound, "Not Found")
-		return
-	}
-	res, err := db.GetResource(comps)
-	if err != nil {
-		respond(w, r, http.StatusNotFound, "Not Found")
-		return
-	}
-	if cmds == nil { //resource without command
-		ct, value, err := res.GetValue()
-		if err != nil {
-			respond(w, r, http.StatusInternalServerError, "Could not get Hook Json")
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		w.Header().Set("Content-Type", ct)
-		w.Write(value)
-	} else { //resource exists with command
-		switch cmds[0] {
-		case "_hooks":
-			json, err := getHooksJson(res)
-			if err != nil {
-				respond(w, r, http.StatusInternalServerError, "Could not get Hook Json")
-				return
-			}
-			w.Write(json)
-		default:
-			log.Printf("unimplemented command", cmds)
-			respond(w, r, http.StatusNotFound, "Not Found")
-		}
+// handles requests for the _hook command
+func handleHookRequest(hd *HandlerData, res Resource, cmds []string) {
+	switch hd.R.Method {
+	case "DELETE":
+		deleteHook(hd, res, cmds)
+	case "GET":
+		getHook(hd, res, cmds)
+	case "POST":
+		postHook(hd, res, cmds)
+	case "PUT":
+		putHook(hd, res, cmds)
+	default:
+		respond(hd, http.StatusMethodNotAllowed, "Method not allowed for hooks.")
 	}
 }
 
+// handles any type of command in a request
+func handleCommand(hd *HandlerData, res Resource, cmds []string) {
+	switch cmds[0] {
+	case "_hooks":
+		handleHookRequest(hd, res, cmds)
+	default:
+		log.Printf("unimplemented command", cmds)
+		respond(hd, http.StatusNotFound, "Not Found")
+	}
+}
+
+// handles a request
+func handleRequest(hd *HandlerData) {
+	comps, cmds, err := disectPath(hd.BaseURL.Path, hd.R.URL.Path)
+	if err != nil {
+		respond(hd, http.StatusNotFound, "Not Found")
+		return
+	}
+	// check security
+	/*if accessAllowed() {
+		respond
+	} else if needsForward() {
+		handleForward
+	} else*/
+	exists, err := hd.DB.ResourceExists(comps)
+	if err != nil {
+		respond(hd, http.StatusInternalServerError, "Could not get Resource")
+		return
+	}
+	if !exists {
+		handleInexistingResource(hd, comps)
+		return
+	}
+	res, err := hd.DB.GetResource(comps)
+	if err != nil {
+		respond(hd, http.StatusInternalServerError, "Resource Not Found")
+		return
+	}
+	if len(cmds) > 0 {
+		handleCommand(hd, res, cmds)
+		return
+	}
+	handleExistingResource(hd, res)
+}
+
+// creates a http handler for handling requests
 func getHandler(db GoBusDB, baseURL *url.URL) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		hd := &HandlerData{
@@ -302,16 +393,9 @@ func getHandler(db GoBusDB, baseURL *url.URL) http.HandlerFunc {
 			R:       r,
 		}
 		start := time.Now()
-		switch r.Method {
-		case "PUT":
-			handlePut(hd)
-		case "POST":
-			handlePost(hd)
-		case "DELETE":
-			handleDelete(hd)
-		default:
-			handleGet(hd)
-		}
+
+		handleRequest(hd)
+
 		log.Printf("%s\t%s\t%s",
 			r.Method,
 			r.RequestURI,

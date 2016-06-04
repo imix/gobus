@@ -112,23 +112,19 @@ func (db *RedisDB) GetResource(elts []string) (Resource, error) {
 
 // deletes a resource
 // delete non-leaf resources generates an error
-func (db *RedisDB) DeleteResource(elts []string) error {
-	key, childKey, hookKey := mkKeys(elts)
-	if len(elts) < 1 {
+func (r *RedisResource) Delete() error {
+	elts, key, childKey, hookKey := r.elts, r.key, r.childKey, r.hookKey
+	if len(elts) == 0 {
 		return errors.New(fmt.Sprintf("Can not delete root resource %s", key))
 	}
-	res, err := db.GetResource(elts)
-	if err != nil {
-		return err
-	}
-	children, err := res.GetChildren()
+	children, err := r.GetChildren()
 	if err != nil {
 		return err
 	}
 	if len(children) != 0 {
 		return errors.New(fmt.Sprintf("Can not delete non-leaf resource %s", key))
 	}
-	parent, err := db.GetResource(elts[:len(elts)-1])
+	parent, err := r.db.GetResource(elts[:len(elts)-1])
 	if err != nil {
 		return err
 	}
@@ -136,7 +132,7 @@ func (db *RedisDB) DeleteResource(elts []string) error {
 	if err != nil {
 		return err
 	}
-	return db.Client.Del(key, childKey, hookKey).Err()
+	return r.db.Client.Del(key, childKey, hookKey).Err()
 }
 
 // helper to add child key to the list of children
@@ -220,22 +216,49 @@ func (r *RedisResource) IsItem() (bool, error) {
 	return item, nil
 }
 
+func (r *RedisResource) GetElts() []string {
+	return r.elts
+}
+
+// creates a new hook, generating a new ID for the hook
 func (r *RedisResource) AddHook(data []byte) (string, error) {
 	nextId, err := r.db.Client.HIncrBy(r.key, nextHookIDField, 1).Result()
 	if err != nil {
 		return "", err
 	}
+	id := strconv.FormatInt(nextId-1, 10)
+	err = r.SetHook(id, data)
+	if err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+func (r *RedisResource) GetHook(id string) (*Hook, error) {
+	data, err := r.db.Client.HGet(r.hookKey, id).Result()
+	if err != nil {
+		return nil, err
+	}
+	parsedHook, err := parseHook([]byte(data)) // check if hook parses ok
+	if err != nil {
+		return nil, err
+	}
+	return parsedHook, nil
+}
+
+// sets the value of a hook with a known ID
+func (r *RedisResource) SetHook(id string, data []byte) error {
 	hook, err := parseHook(data) // check if hook parses ok
 	if err != nil {
-		return "", err
+		return err
 	}
-	hook.Id = strconv.FormatInt(nextId-1, 10)
+	hook.Id = id // make sure hook ID is correct
 	hookData, err := json.Marshal(hook)
 	if err != nil {
-		return "", err
+		return err
 	}
 	r.db.Client.HSet(r.hookKey, hook.Id, string(hookData))
-	return hook.Id, nil
+	return nil
 }
 
 func (r *RedisResource) DeleteHook(id string) error {
@@ -249,18 +272,22 @@ func (r *RedisResource) DeleteHook(id string) error {
 	return nil
 }
 
-func (r *RedisResource) GetHooks() ([]*Hook, error) {
+func (r *RedisResource) GetHooksIDs() ([]string, error) {
 	keys, err := r.db.Client.HKeys(r.hookKey).Result()
+	if err != nil {
+		return nil, err
+	}
+	return keys, nil
+}
+
+func (r *RedisResource) GetHooks() ([]*Hook, error) {
+	keys, err := r.GetHooksIDs()
 	if err != nil {
 		return nil, err
 	}
 	hooks := []*Hook{}
 	for _, k := range keys {
-		data, err := r.db.Client.HGet(r.hookKey, k).Result()
-		if err != nil {
-			return nil, err
-		}
-		parsedHook, err := parseHook([]byte(data)) // check if hook parses ok
+		parsedHook, err := r.GetHook(k)
 		if err != nil {
 			return nil, err
 		}

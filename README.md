@@ -13,8 +13,13 @@ go build
 ```
 Additionally you need to install redis. You can install it via your operating system (e.g. dnf, apt-get) or from http://redis.io/topics/quickstart.
 
+Optionally you can run the tests and view the coverage (redis needs to be running for the tests):
+```
+go test -coverprofile=coverage.out && go tool cover -func=coverage.out
+```
+
 ## Usage
-You can start gobus by calling the executable:
+Before running gobus, redis has to be running. You can then start gobus by calling the executable:
 ```
 ./gobus
 ```
