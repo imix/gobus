@@ -21,4 +21,7 @@ type Resource interface {
 	GetHook(id string) (*Hook, error)
 	GetHooks() ([]*Hook, error)
 	GetHooksIDs() ([]string, error)
+	DeleteForward() error
+	GetForward() (*Forward, error)
+	AddForward(data []byte) error
 }

@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/bsm/redis-lock"
+
 	"gopkg.in/redis.v3"
 )
 
@@ -20,6 +22,8 @@ type RedisResource struct {
 	key      string
 	childKey string
 	hookKey  string
+	forward  string
+	lock     *lock.Lock
 }
 
 const (
@@ -29,6 +33,7 @@ const (
 	contentTypeField = "contentType"
 	nextIDField      = "nextID"
 	nextHookIDField  = "nextHookID"
+	forwardField     = "forward"
 )
 
 func NewRedisDB() GoBusDB {
@@ -41,15 +46,29 @@ func NewRedisDB() GoBusDB {
 	return &RedisDB{client}
 }
 
-func mkKeys(elts []string) (string, string, string) {
+func mkKeys(elts []string) (string, string, string, error) {
+	for _, e := range elts {
+		if isCommand(e) || strings.HasSuffix(e, "-lock") {
+			return "", "", "", errors.New(fmt.Sprintf("Path contains illegal name %s", e))
+		}
+	}
 	key := "root:" + strings.Join(elts, ":")
 	childKey := key + ":_children"
 	hookKey := key + ":_hooks"
-	return key, childKey, hookKey
+	return key, childKey, hookKey, nil
+}
+
+func mkResource(db *RedisDB, elts []string, key, childKey, hookKey, forward string) Resource {
+	lock := lock.NewLock(db.Client, key+"-lock", nil)
+	return &RedisResource{db, elts, key, childKey, hookKey, forward, lock}
 }
 
 func (db *RedisDB) addResource(elts []string, value, ct, item string) (Resource, error) {
-	key, childKey, hookKey := mkKeys(elts)
+	key, childKey, hookKey, err := mkKeys(elts)
+	if err != nil {
+		return nil, err
+	}
+
 	name := elts[len(elts)-1]
 	db.Client.HSet(key, nameField, name)
 	db.Client.HSet(key, valueField, value)
@@ -57,15 +76,16 @@ func (db *RedisDB) addResource(elts []string, value, ct, item string) (Resource,
 	db.Client.HSet(key, itemField, item)
 	db.Client.HSet(key, nextIDField, "0")
 	db.Client.HSet(key, nextHookIDField, "0")
+	db.Client.HSet(key, forwardField, "{}")
 	parent, err := db.GetResource(elts[:len(elts)-1])
 	if err != nil {
 		return nil, err
 	}
-	err = parent.(*RedisResource).AddChildKey(key)
+	err = parent.(*RedisResource).addChildKey(key)
 	if err != nil {
 		return nil, err
 	}
-	return &RedisResource{db, elts, key, childKey, hookKey}, nil
+	return mkResource(db, elts, key, childKey, hookKey, "{}"), nil
 }
 
 // Creates the resource defined by the given path
@@ -85,7 +105,10 @@ func (db *RedisDB) CreateResource(elts []string, item bool) (Resource, error) {
 
 // checks to see if the resource exists
 func (db *RedisDB) ResourceExists(elts []string) (bool, error) {
-	key, _, _ := mkKeys(elts)
+	key, _, _, err := mkKeys(elts)
+	if err != nil {
+		return false, err
+	}
 	exists, err := db.Client.Exists(key).Result()
 	if err != nil {
 		return false, err
@@ -97,9 +120,12 @@ func (db *RedisDB) ResourceExists(elts []string) (bool, error) {
 // if the Resource could not be found returns an error
 func (db *RedisDB) GetResource(elts []string) (Resource, error) {
 	if len(elts) == 0 { // root resource
-		return &RedisResource{db, []string{}, "root", "root:_children", "root:_hooks"}, nil
+		return mkResource(db, []string{}, "root", "root:_children", "root:_hooks", "{}"), nil
 	}
-	key, childKey, hookKey := mkKeys(elts)
+	key, childKey, hookKey, err := mkKeys(elts)
+	if err != nil {
+		return nil, err
+	}
 	exists, err := db.Client.Exists(key).Result()
 	if err != nil {
 		return nil, err
@@ -107,17 +133,23 @@ func (db *RedisDB) GetResource(elts []string) (Resource, error) {
 	if !exists {
 		return nil, errors.New(fmt.Sprintf("Resource not found: %s", key))
 	}
-	return &RedisResource{db, elts, key, childKey, hookKey}, nil
+	forward, err := db.Client.HGet(key, forwardField).Result()
+	if err != nil {
+		return nil, err
+	}
+	return mkResource(db, elts, key, childKey, hookKey, forward), nil
 }
 
 // deletes a resource
 // delete non-leaf resources generates an error
 func (r *RedisResource) Delete() error {
+	r.lock.Lock()
+	defer r.lock.Unlock()
 	elts, key, childKey, hookKey := r.elts, r.key, r.childKey, r.hookKey
 	if len(elts) == 0 {
 		return errors.New(fmt.Sprintf("Can not delete root resource %s", key))
 	}
-	children, err := r.GetChildren()
+	children, err := r.getChildren()
 	if err != nil {
 		return err
 	}
@@ -128,7 +160,7 @@ func (r *RedisResource) Delete() error {
 	if err != nil {
 		return err
 	}
-	err = parent.(*RedisResource).RemoveChildKey(key)
+	err = parent.(*RedisResource).removeChildKey(key)
 	if err != nil {
 		return err
 	}
@@ -138,17 +170,31 @@ func (r *RedisResource) Delete() error {
 // helper to add child key to the list of children
 // Does not create the child!
 func (r *RedisResource) AddChildKey(key string) error {
+	return r.addChildKey(key)
+}
+
+func (r *RedisResource) addChildKey(key string) error {
+	r.lock.Lock()
+	defer r.lock.Unlock()
 	return r.db.Client.SAdd(r.childKey, key).Err()
 }
 
 // helper to remove child key from the list of children
 // Does not delete the child!
 func (r *RedisResource) RemoveChildKey(key string) error {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	return r.removeChildKey(key)
+}
+
+func (r *RedisResource) removeChildKey(key string) error {
 	return r.db.Client.SRem(r.childKey, key).Err()
 }
 
 // returns the content-type and the value of a resource
 func (r *RedisResource) GetValue() (string, []byte, error) {
+	r.lock.Lock()
+	defer r.lock.Unlock()
 	contentType, err := r.db.Client.HGet(r.key, contentTypeField).Result()
 	if err != nil {
 		return "", nil, err
@@ -162,6 +208,12 @@ func (r *RedisResource) GetValue() (string, []byte, error) {
 
 // returns a list with all children's IDs
 func (r *RedisResource) GetChildren() ([]string, error) {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	return r.getChildren()
+}
+
+func (r *RedisResource) getChildren() ([]string, error) {
 	children, err := r.db.Client.SMembers(r.childKey).Result()
 	if err != nil {
 		return nil, err
@@ -170,6 +222,8 @@ func (r *RedisResource) GetChildren() ([]string, error) {
 }
 
 func (r *RedisResource) SetValue(contentType string, value []byte) error {
+	r.lock.Lock()
+	defer r.lock.Unlock()
 	r.db.Client.HSet(r.key, valueField, string(value))
 	r.db.Client.HSet(r.key, contentTypeField, contentType)
 	return nil
@@ -178,6 +232,8 @@ func (r *RedisResource) SetValue(contentType string, value []byte) error {
 // adds a resource to a collection
 // the resource may not be an item
 func (r *RedisResource) AddToCollection(contentType string, data []byte) (string, error) {
+	r.lock.Lock()
+	defer r.lock.Unlock()
 	item, err := r.db.Client.HGet(r.key, itemField).Result()
 	if err != nil {
 		return "", err
@@ -197,6 +253,8 @@ func (r *RedisResource) AddToCollection(contentType string, data []byte) (string
 }
 
 func (r *RedisResource) Name() (string, error) {
+	r.lock.Lock()
+	defer r.lock.Unlock()
 	name, err := r.db.Client.HGet(r.key, nameField).Result()
 	if err != nil {
 		return "", err
@@ -205,6 +263,8 @@ func (r *RedisResource) Name() (string, error) {
 }
 
 func (r *RedisResource) IsItem() (bool, error) {
+	r.lock.Lock()
+	defer r.lock.Unlock()
 	itemStr, err := r.db.Client.HGet(r.key, itemField).Result()
 	if err != nil {
 		return false, err
@@ -222,12 +282,15 @@ func (r *RedisResource) GetElts() []string {
 
 // creates a new hook, generating a new ID for the hook
 func (r *RedisResource) AddHook(data []byte) (string, error) {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+
 	nextId, err := r.db.Client.HIncrBy(r.key, nextHookIDField, 1).Result()
 	if err != nil {
 		return "", err
 	}
 	id := strconv.FormatInt(nextId-1, 10)
-	err = r.SetHook(id, data)
+	err = r.setHook(id, data)
 	if err != nil {
 		return "", err
 	}
@@ -235,6 +298,12 @@ func (r *RedisResource) AddHook(data []byte) (string, error) {
 }
 
 func (r *RedisResource) GetHook(id string) (*Hook, error) {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	return r.getHook(id)
+}
+
+func (r *RedisResource) getHook(id string) (*Hook, error) {
 	data, err := r.db.Client.HGet(r.hookKey, id).Result()
 	if err != nil {
 		return nil, err
@@ -248,6 +317,14 @@ func (r *RedisResource) GetHook(id string) (*Hook, error) {
 
 // sets the value of a hook with a known ID
 func (r *RedisResource) SetHook(id string, data []byte) error {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	return r.setHook(id, data)
+}
+
+// sets the value of a hook with a known ID
+// internal version without locking
+func (r *RedisResource) setHook(id string, data []byte) error {
 	hook, err := parseHook(data) // check if hook parses ok
 	if err != nil {
 		return err
@@ -262,6 +339,8 @@ func (r *RedisResource) SetHook(id string, data []byte) error {
 }
 
 func (r *RedisResource) DeleteHook(id string) error {
+	r.lock.Lock()
+	defer r.lock.Unlock()
 	result, err := r.db.Client.HDel(r.hookKey, id).Result()
 	if err != nil {
 		return err
@@ -273,6 +352,12 @@ func (r *RedisResource) DeleteHook(id string) error {
 }
 
 func (r *RedisResource) GetHooksIDs() ([]string, error) {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	return r.getHooksIDs()
+}
+
+func (r *RedisResource) getHooksIDs() ([]string, error) {
 	keys, err := r.db.Client.HKeys(r.hookKey).Result()
 	if err != nil {
 		return nil, err
@@ -281,17 +366,54 @@ func (r *RedisResource) GetHooksIDs() ([]string, error) {
 }
 
 func (r *RedisResource) GetHooks() ([]*Hook, error) {
-	keys, err := r.GetHooksIDs()
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	keys, err := r.getHooksIDs()
 	if err != nil {
 		return nil, err
 	}
 	hooks := []*Hook{}
 	for _, k := range keys {
-		parsedHook, err := r.GetHook(k)
+		parsedHook, err := r.getHook(k)
 		if err != nil {
 			return nil, err
 		}
 		hooks = append(hooks, parsedHook)
 	}
 	return hooks, nil
+}
+
+func (r *RedisResource) GetForward() (*Forward, error) {
+	return parseForward([]byte(r.forward))
+}
+
+// sets the value of the forward
+func (r *RedisResource) AddForward(data []byte) error {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	forward, err := parseForward(data) // check if hook parses ok
+	if err != nil {
+		return err
+	}
+	forwardData, err := json.Marshal(forward)
+	if err != nil {
+		return err
+	}
+	err = r.db.Client.HSet(r.key, forwardField, string(forwardData)).Err()
+	if err != nil {
+		return err
+	}
+	r.forward = string(forwardData)
+	return nil
+}
+
+func (r *RedisResource) DeleteForward() error {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	err := r.db.Client.HSet(r.key, forwardField, "{}").Err()
+	if err != nil {
+		return err
+	}
+	r.forward = "{}"
+	return nil
 }

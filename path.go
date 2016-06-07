@@ -48,7 +48,7 @@ func disectPath(basePath string, newPath string) ([]string, []string, error) {
 // checks if the given name is a command
 // currently only knows about _hooks
 func isCommand(name string) bool {
-	for _, cmd := range []string{"_hooks"} {
+	for _, cmd := range []string{"_hooks", "_forward"} {
 		if strings.Compare(name, cmd) == 0 {
 			return true
 		}

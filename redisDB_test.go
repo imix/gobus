@@ -115,6 +115,31 @@ func TestCreateMultipleResources(t *testing.T) {
 	teardownRedis(db)
 }
 
+func TestCreateResourceIllegalName(t *testing.T) {
+	db := NewRedisDB()
+
+	elts := []string{"level01"}
+	db.CreateResource(elts, false)
+
+	elts = []string{"level01", "_hooks"}
+	_, err := db.CreateResource(elts, false)
+	if err == nil {
+		t.Error("Should not be able to create a resource _hooks")
+	}
+
+	elts = []string{"level01", "_forward"}
+	_, err = db.CreateResource(elts, false)
+	if err == nil {
+		t.Error("Should not be able to create a resource _forwards")
+	}
+
+	elts = []string{"level01-lock"}
+	_, err = db.CreateResource(elts, false)
+	if err == nil {
+		t.Error("Should not be able to create a resource including -locks")
+	}
+}
+
 func TestGetResource(t *testing.T) {
 	db := NewRedisDB()
 	elts := []string{"level0", "level1", "level2"}
@@ -207,6 +232,7 @@ func TestAddHook(t *testing.T) {
 	if strings.Compare(name, "0") != 0 {
 		t.Error("Hook Id not set")
 	}
+	teardownRedis(db)
 }
 
 func TestGetHook(t *testing.T) {

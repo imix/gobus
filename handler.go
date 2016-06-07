@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -28,36 +27,6 @@ func respond(hd *HandlerData, status int, msg string) {
 	fmt.Fprintf(w, "%s: ", strconv.Itoa(status))
 	fmt.Fprintf(w, "%s\n", msg)
 	fmt.Fprintf(w, "Request URL: %s\n", r.URL.String())
-}
-
-func callHooks(res Resource, method, basePath string) {
-	comps := res.GetElts()
-	resURL := path.Join(basePath, path.Join(comps...))
-	hooks, err := res.GetHooks()
-	if err != nil {
-		log.Printf("Internal error, could not get hooks: %v", err.Error())
-		return
-	}
-	isitem, err := res.IsItem()
-	if err != nil {
-		panic(err)
-		log.Printf("Internal error, could not get isitem: %v", err.Error())
-		return
-	}
-	for _, h := range hooks {
-		var event = HookEvent{
-			Name:             h.Name,
-			Method:           method,
-			Item:             isitem,
-			ModifiedResource: resURL,
-		}
-		data, err := json.Marshal(event)
-		if err != nil {
-			log.Printf("Failed to marshal hook %s", h.Name)
-			continue
-		}
-		go http.Post(h.URL, "application/json", bytes.NewReader(data))
-	}
 }
 
 // respond with a "Created" (201) and set location to the new url
@@ -230,119 +199,13 @@ func handleInexistingResource(hd *HandlerData, comps []string) {
 	respond(hd, http.StatusCreated, msg)
 }
 
-// hook handlers
-// deletes an existing hook
-func deleteHook(hd *HandlerData, res Resource, cmds []string) {
-	if len(cmds) != 2 {
-		respond(hd, http.StatusNotFound, "Not Found")
-		return
-	}
-	err := res.DeleteHook(cmds[1])
-	if err != nil {
-		respond(hd, http.StatusNotFound, "Not Found")
-		return
-	}
-	respond(hd, http.StatusOK, "Deleted")
-}
-
-// returns either a single hook specified by the ID or a list of all hooks
-func getHook(hd *HandlerData, res Resource, cmds []string) {
-	w := hd.W
-	switch len(cmds) {
-	case 1: // get on the _hooks collection
-		ids, err := res.GetHooksIDs()
-		if err != nil {
-			respond(hd, http.StatusInternalServerError, "Could not get Hooks")
-			break
-		}
-		data, err := json.Marshal(ids)
-		if err != nil {
-			respond(hd, http.StatusInternalServerError, "Could not get Hooks Json")
-			break
-		}
-		w.Write(data)
-	case 2: // get a specific hook
-		hook, err := res.GetHook(cmds[1])
-		if err != nil {
-			respond(hd, http.StatusInternalServerError, "Could not get Hook")
-			break
-		}
-		data, err := json.Marshal(hook)
-		if err != nil {
-			respond(hd, http.StatusInternalServerError, "Could not get Hook Json")
-			break
-		}
-		w.Write(data)
-	default:
-		respond(hd, http.StatusNotFound, "Hooks do not have sub-elements.")
-	}
-}
-
-// create a new hook, returns the ID of the hook
-func postHook(hd *HandlerData, res Resource, cmds []string) {
-	if len(cmds) == 1 {
-		body := hd.R.Body
-		data, err := ioutil.ReadAll(body)
-		body.Close()
-		name, err := res.AddHook(data)
-		if err != nil {
-			respond(hd, http.StatusInternalServerError, "Could not create Hook")
-			return
-		}
-		respondCreatedNewURL(hd.W, hd.R.URL, name)
-	} else {
-		respond(hd, http.StatusMethodNotAllowed, "Method not allowed for hooks.")
-	}
-}
-
-// puts a hook, only permitted for existing hooks
-// new hooks have to be created with post
-func putHook(hd *HandlerData, res Resource, cmds []string) {
-	if len(cmds) == 2 {
-		_, err := res.GetHook(cmds[1])
-		if err != nil {
-			respond(hd, http.StatusInternalServerError, "Could not get Hook")
-			return
-		}
-		body := hd.R.Body
-		data, err := ioutil.ReadAll(body)
-		body.Close()
-		if err != nil {
-			respond(hd, http.StatusBadRequest, "Invalid Request")
-			return
-		}
-		err = res.SetHook(cmds[1], data)
-		if err != nil {
-			respond(hd, http.StatusInternalServerError, "Could not set Hook")
-			return
-		}
-		respond(hd, http.StatusOK, "Hook updated.")
-	} else {
-		respond(hd, http.StatusMethodNotAllowed, "Put only allowed on existing hooks.")
-	}
-}
-
-// handles requests for the _hook command
-func handleHookRequest(hd *HandlerData, res Resource, cmds []string) {
-	switch hd.R.Method {
-	case "DELETE":
-		deleteHook(hd, res, cmds)
-	case "GET":
-		getHook(hd, res, cmds)
-	case "POST":
-		postHook(hd, res, cmds)
-	case "PUT":
-		putHook(hd, res, cmds)
-	default:
-		respond(hd, http.StatusMethodNotAllowed, "Method not allowed for hooks.")
-	}
-}
-
 // handles any type of command in a request
 func handleCommand(hd *HandlerData, res Resource, cmds []string) {
 	switch cmds[0] {
 	case "_hooks":
 		handleHookRequest(hd, res, cmds)
+	case "_forward":
+		handleForwardRequest(hd, res, cmds)
 	default:
 		log.Printf("unimplemented command", cmds)
 		respond(hd, http.StatusNotFound, "Not Found")
@@ -358,20 +221,31 @@ func handleRequest(hd *HandlerData) {
 	}
 	// check security
 	/*if accessAllowed() {
-		respond
-	} else if needsForward() {
-		handleForward
-	} else*/
+	respond
+	*/
+	res, err := getForwardResource(hd, comps, cmds)
+	if err != nil {
+		respond(hd, http.StatusInternalServerError, "Could not get ForwardResource")
+		return
+	}
+	if res != nil {
+		forwardRequest(hd, res, comps)
+		return
+	}
 	exists, err := hd.DB.ResourceExists(comps)
 	if err != nil {
 		respond(hd, http.StatusInternalServerError, "Could not get Resource")
 		return
 	}
 	if !exists {
-		handleInexistingResource(hd, comps)
+		if len(cmds) == 0 {
+			handleInexistingResource(hd, comps)
+		} else {
+			respond(hd, http.StatusNotFound, "Can not execute command on inexisting resource")
+		}
 		return
 	}
-	res, err := hd.DB.GetResource(comps)
+	res, err = hd.DB.GetResource(comps)
 	if err != nil {
 		respond(hd, http.StatusInternalServerError, "Resource Not Found")
 		return
