@@ -1,6 +1,6 @@
 # GOBUS
 ## Introduction
-gobus is a rest communication platform. It permits the communication between processes through rest calls. There is no need for configuration before running gobus, all configuration (e.g. creation of resources) is done through rest calls. 
+gobus is a rest communication platform. It permits the communication between processes through rest calls. It can be used in microservice architectures, Internet of Things (IoT) or other rest based systems. There is no need for configuration before running gobus, all configuration (e.g. creation of resources) is done through rest calls. 
 
 It has the following features:
   * items
@@ -29,7 +29,10 @@ Before running gobus, redis has to be running. You can then start gobus by calli
 ```
 ./gobus
 ```
-This will listen on localhost:8080 for your requests. This is not yet configurable.
+This will listen on localhost:8080 for your requests. To configure the port, set the environement variable PORT to the desired port.
+
+Gobus can be used from any programming language supporting http calls. For go you can use [gbclient](https://github.com/imix/gbclient) to use gobus. The following examples use [curl](https://curl.haxx.se/) from the command line to show how to use gobus.
+
 
 ### Items
 Creating a resource is done with a Put request
